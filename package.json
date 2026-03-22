@@ -1,0 +1,19 @@
+{
+  "name": "tldv-slack-bot",
+  "version": "1.0.0",
+  "description": "TLDVのWebhookを受信し、Claude APIで議事録を生成してSlackに投稿するボット",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.19.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
