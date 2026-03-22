@@ -4,11 +4,22 @@
 require("dotenv").config();
 const express = require("express");
 const crypto = require("crypto");
+const rateLimit = require("express-rate-limit");
 const { generateMinutes } = require("./claude");
 const { postToSlack } = require("./slack");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// レート制限の設定
+// 同一IPから短時間に大量リクエストが来た場合にブロックする
+const webhookLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15分間のウィンドウ
+  max: 30,                   // 15分間に最大30リクエストまで許可
+  message: { error: "Too many requests. Please try again later." },
+  standardHeaders: true,     // RateLimit-* ヘッダーを返す
+  legacyHeaders: false,      // X-RateLimit-* ヘッダーは使わない
+});
 
 // リクエストボディをバッファとして保持（HMAC署名検証に生のバイト列が必要）
 app.use(
@@ -115,7 +126,7 @@ function extractMeetingData(payload) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // POST /webhook — メインのWebhookエンドポイント
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-app.post("/webhook", async (req, res) => {
+app.post("/webhook", webhookLimiter, async (req, res) => {
   console.log("[Webhook] リクエスト受信:", new Date().toISOString());
 
   // ─── 1. APIキー認証 ───
