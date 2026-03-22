@@ -20,41 +20,30 @@ app.use(
 );
 
 /**
- * HMAC-SHA256署名を検証する関数
- * @param {Buffer} rawBody - リクエストボディの生バイト列
- * @param {string} signature - x-tldv-signatureヘッダーの値
- * @returns {boolean} 署名が正しければtrue
+ * TLDVから送られるAPIキーを検証する関数
+ * TLDVはリクエストヘッダー x-api-key にAPIキーを付与する
+ * @param {string} apiKey - x-api-keyヘッダーの値
+ * @returns {boolean} APIキーが正しければtrue
  */
-function verifySignature(rawBody, signature) {
-  const secret = process.env.TLDV_WEBHOOK_SECRET;
+function verifyApiKey(apiKey) {
+  const expectedKey = process.env.TLDV_API_KEY;
 
-  // シークレットが未設定の場合はスキップ（開発時のみ。本番では必ず設定すること）
-  if (!secret) {
-    console.warn("[警告] TLDV_WEBHOOK_SECRETが未設定です。署名検証をスキップします。");
+  // APIキーが未設定の場合はスキップ（開発時のみ。本番では必ず設定すること）
+  if (!expectedKey) {
+    console.warn("[警告] TLDV_API_KEYが未設定です。認証をスキップします。");
     return true;
   }
 
-  if (!signature) {
-    console.error("[エラー] x-tldv-signatureヘッダーが見つかりません");
+  if (!apiKey) {
+    console.error("[エラー] x-api-keyヘッダーが見つかりません");
     return false;
   }
-
-  // "sha256=" プレフィックスを除去して比較（TLDVの署名形式に応じて調整）
-  const signatureBody = signature.startsWith("sha256=")
-    ? signature.slice(7)
-    : signature;
-
-  // HMAC-SHA256で署名を計算
-  const expectedSignature = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody)
-    .digest("hex");
 
   // タイミング攻撃を防ぐためtimingSafeEqualで比較
   try {
     return crypto.timingSafeEqual(
-      Buffer.from(signatureBody, "hex"),
-      Buffer.from(expectedSignature, "hex")
+      Buffer.from(apiKey),
+      Buffer.from(expectedKey)
     );
   } catch {
     return false;
@@ -129,13 +118,13 @@ function extractMeetingData(payload) {
 app.post("/webhook", async (req, res) => {
   console.log("[Webhook] リクエスト受信:", new Date().toISOString());
 
-  // ─── 1. HMAC-SHA256署名検証 ───
-  const signature = req.headers["x-tldv-signature"];
-  if (!verifySignature(req.rawBody, signature)) {
-    console.error("[Webhook] 署名検証失敗 - 不正なリクエストです");
-    return res.status(403).json({ error: "Invalid signature" });
+  // ─── 1. APIキー認証 ───
+  const apiKey = req.headers["x-api-key"];
+  if (!verifyApiKey(apiKey)) {
+    console.error("[Webhook] APIキー認証失敗 - 不正なリクエストです");
+    return res.status(403).json({ error: "Invalid API key" });
   }
-  console.log("[Webhook] 署名検証OK");
+  console.log("[Webhook] APIキー認証OK");
 
   // ─── 2. TLDVには即座に200を返す ───
   // TLDVのリトライを防ぐため、処理完了を待たずにレスポンスを返す
