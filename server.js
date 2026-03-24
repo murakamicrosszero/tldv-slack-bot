@@ -15,6 +15,9 @@ const TLDV_API_BASE = "https://pasta.tldv.io/v1alpha1";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Railwayはリバースプロキシを使うため、プロキシを信頼する設定が必要
+app.set("trust proxy", 1);
+
 // レート制限の設定
 // 同一IPから短時間に大量リクエストが来た場合にブロックする
 const webhookLimiter = rateLimit({
