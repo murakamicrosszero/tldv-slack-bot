@@ -4,9 +4,13 @@
 require("dotenv").config();
 const express = require("express");
 const crypto = require("crypto");
+const axios = require("axios");
 const rateLimit = require("express-rate-limit");
 const { generateMinutes } = require("./claude");
 const { postToSlack } = require("./slack");
+
+// TLDV APIのベースURL
+const TLDV_API_BASE = "https://pasta.tldv.io/v1alpha1";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -62,65 +66,110 @@ function verifyApiKey(apiKey) {
 }
 
 /**
- * TLDVのWebhookペイロードからミーティングデータを抽出する関数
- * ペイロード構造が異なる場合に備えてフォールバック処理を実装
+ * Webhookペイロードから直接ミーティングデータを抽出するフォールバック関数
+ * TLDV_API_KEYが未設定の場合に使用する
  * @param {Object} payload - Webhookのリクエストボディ
  * @returns {Object} 正規化されたミーティングデータ
  */
-function extractMeetingData(payload) {
-  // TLDVのWebhookペイロード構造に合わせて柔軟に対応
+function extractMeetingDataFromPayload(payload) {
   const meeting = payload.meeting || payload.data?.meeting || payload || {};
-
   return {
-    // 会議タイトル（複数のパスを試みる）
-    title:
-      meeting.title ||
-      meeting.name ||
-      payload.title ||
-      "（タイトル不明）",
-
-    // 開始日時（ISO形式またはタイムスタンプ）
-    start_time:
-      meeting.start_time ||
-      meeting.startTime ||
-      meeting.started_at ||
-      payload.start_time ||
-      new Date().toISOString(),
-
-    // 参加者リスト（配列または文字列）
+    title: meeting.title || meeting.name || payload.title || "（タイトル不明）",
+    start_time: meeting.start_time || meeting.startTime || meeting.happenedAt || new Date().toISOString(),
     participants: (() => {
-      const raw =
-        meeting.participants ||
-        meeting.attendees ||
-        payload.participants ||
-        [];
-      if (Array.isArray(raw)) {
-        // オブジェクト形式の場合は名前を抽出
-        return raw.map((p) =>
-          typeof p === "string" ? p : p.name || p.email || p.displayName || String(p)
-        );
-      }
-      if (typeof raw === "string") {
-        return raw.split(",").map((s) => s.trim()).filter(Boolean);
-      }
+      const raw = meeting.participants || meeting.invitees || meeting.attendees || payload.participants || [];
+      if (Array.isArray(raw)) return raw.map((p) => typeof p === "string" ? p : p.name || p.email || String(p));
+      if (typeof raw === "string") return raw.split(",").map((s) => s.trim()).filter(Boolean);
       return [];
     })(),
-
-    // フルトランスクリプト（話者ラベル付き）
-    transcript:
-      meeting.transcript ||
-      meeting.transcription ||
-      meeting.full_transcript ||
-      payload.transcript ||
-      "",
-
-    // TLDVの自動生成サマリー（参考情報として使用）
-    summary:
-      meeting.summary ||
-      meeting.auto_summary ||
-      payload.summary ||
-      "",
+    transcript: meeting.transcript || meeting.transcription || payload.transcript || "",
+    summary: meeting.summary || payload.summary || "",
   };
+}
+
+/**
+ * WebhookペイロードからミーティングIDを抽出する関数
+ * @param {Object} payload - Webhookのリクエストボディ
+ * @returns {string|null} ミーティングID
+ */
+function extractMeetingId(payload) {
+  return (
+    payload.id ||
+    payload.meeting?.id ||
+    payload.data?.meeting?.id ||
+    payload.meetingId ||
+    null
+  );
+}
+
+/**
+ * TLDV APIからミーティング情報とトランスクリプトを取得する関数
+ * トランスクリプトが準備できるまでポーリングする
+ * @param {string} meetingId - TLDVのミーティングID
+ * @param {number} maxRetries - 最大リトライ回数（デフォルト10回）
+ * @param {number} intervalMs - リトライ間隔ミリ秒（デフォルト30秒）
+ * @returns {Object} 正規化されたミーティングデータ
+ */
+async function fetchMeetingDataWithRetry(meetingId, maxRetries = 10, intervalMs = 30000) {
+  const apiKey = process.env.TLDV_ACCESS_KEY;
+  if (!apiKey) {
+    throw new Error("TLDV_ACCESS_KEYが設定されていません");
+  }
+
+  const headers = { "x-api-key": apiKey };
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`[TLDV API] トランスクリプト確認中... (試行 ${attempt}/${maxRetries})`);
+
+    try {
+      // ミーティング情報とトランスクリプトを並列で取得
+      const [meetingRes, transcriptRes] = await Promise.all([
+        axios.get(`${TLDV_API_BASE}/meetings/${meetingId}/`, { headers }),
+        axios.get(`${TLDV_API_BASE}/meetings/${meetingId}/transcript/`, { headers }).catch(() => null),
+      ]);
+
+      const meeting = meetingRes.data;
+      const transcriptData = transcriptRes?.data?.data;
+
+      // トランスクリプトが存在して内容があれば処理する
+      if (transcriptData && transcriptData.length > 0) {
+        console.log(`[TLDV API] トランスクリプト準備完了（${transcriptData.length}件の発言）`);
+
+        // トランスクリプトを「話者：発言内容」形式のテキストに変換
+        const transcript = transcriptData
+          .map((t) => `${t.speaker}：${t.text}`)
+          .join("\n");
+
+        // 参加者リストを構築（inviteesから取得）
+        const participants = (meeting.invitees || []).map(
+          (p) => p.name || p.email || String(p)
+        );
+        if (meeting.organizer?.name && !participants.includes(meeting.organizer.name)) {
+          participants.unshift(meeting.organizer.name);
+        }
+
+        return {
+          title: meeting.name || "（タイトル不明）",
+          start_time: meeting.happenedAt || new Date().toISOString(),
+          participants,
+          transcript,
+          summary: "",
+        };
+      }
+
+      // トランスクリプト未準備の場合
+      console.log(`[TLDV API] トランスクリプト未準備。${intervalMs / 1000}秒後に再試行します...`);
+    } catch (error) {
+      console.error(`[TLDV API] エラー (試行 ${attempt}):`, error.message);
+    }
+
+    // 最後の試行でなければ待機
+    if (attempt < maxRetries) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  throw new Error(`トランスクリプトが${maxRetries}回試行後も準備できませんでした`);
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -143,8 +192,21 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
 
   // ─── 3. 非同期で議事録生成・Slack投稿を実行 ───
   try {
-    // ペイロードからミーティングデータを抽出
-    const meetingData = extractMeetingData(req.body);
+    // WebhookペイロードからミーティングIDを取得
+    const meetingId = extractMeetingId(req.body);
+
+    let meetingData;
+    if (meetingId && process.env.TLDV_ACCESS_KEY) {
+      // TLDV APIを使い、トランスクリプト準備完了を確認してからデータ取得
+      console.log("[Webhook] ミーティングID:", meetingId);
+      console.log("[Webhook] TLDV APIでトランスクリプト準備完了を確認します...");
+      meetingData = await fetchMeetingDataWithRetry(meetingId);
+    } else {
+      // APIキー未設定またはIDなしの場合はWebhookペイロードから直接取得（フォールバック）
+      console.warn("[Webhook] TLDV_ACCESS_KEYが未設定のため、Webhookペイロードから直接データを取得します");
+      meetingData = extractMeetingDataFromPayload(req.body);
+    }
+
     console.log("[Webhook] ミーティングタイトル:", meetingData.title);
     console.log("[Webhook] 参加者数:", meetingData.participants.length);
 
