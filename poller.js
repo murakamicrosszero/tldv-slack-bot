@@ -3,44 +3,14 @@
 
 const cron = require("node-cron");
 const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
 const { generateMinutes } = require("./claude");
 const { postToSlack } = require("./slack");
 
 // TLDV APIのベースURL
 const TLDV_API_BASE = "https://pasta.tldv.io/v1alpha1";
 
-// 処理済みミーティングIDを記録するファイルパス
-const PROCESSED_FILE = path.join(__dirname, "processed_meetings.json");
-
-/**
- * 処理済みミーティングIDのセットを読み込む
- * @returns {Set<string>}
- */
-function loadProcessedIds() {
-  try {
-    if (fs.existsSync(PROCESSED_FILE)) {
-      const data = JSON.parse(fs.readFileSync(PROCESSED_FILE, "utf8"));
-      return new Set(data);
-    }
-  } catch (e) {
-    console.error("[Poller] processed_meetings.json の読み込みエラー:", e.message);
-  }
-  return new Set();
-}
-
-/**
- * 処理済みミーティングIDをファイルに保存する
- * @param {Set<string>} ids
- */
-function saveProcessedIds(ids) {
-  try {
-    fs.writeFileSync(PROCESSED_FILE, JSON.stringify([...ids]), "utf8");
-  } catch (e) {
-    console.error("[Poller] processed_meetings.json の保存エラー:", e.message);
-  }
-}
+// 処理済みミーティングIDをメモリ上で管理（再起動時はリセットされる）
+const processedIds = new Set();
 
 /**
  * TLDV APIから最新のミーティング一覧を取得する
@@ -77,6 +47,23 @@ async function fetchTranscript(meetingId) {
 }
 
 /**
+ * 起動時に既存のミーティングを全て処理済みとして登録する
+ * これにより再起動後も過去のミーティングを重複処理しない
+ */
+async function initializeProcessedIds() {
+  console.log("[Poller] 既存ミーティングを処理済みとして初期化中...");
+  try {
+    const meetings = await fetchRecentMeetings();
+    for (const m of meetings) {
+      processedIds.add(m.id);
+    }
+    console.log(`[Poller] ${processedIds.size}件を処理済みとして登録しました`);
+  } catch (e) {
+    console.error("[Poller] 初期化エラー:", e.message);
+  }
+}
+
+/**
  * 新しいミーティングを処理して議事録をSlackに投稿する
  */
 async function pollAndProcess() {
@@ -90,8 +77,6 @@ async function pollAndProcess() {
 
   console.log("[Poller] ポーリング開始...");
 
-  const processedIds = loadProcessedIds();
-
   let meetings;
   try {
     meetings = await fetchRecentMeetings();
@@ -100,18 +85,9 @@ async function pollAndProcess() {
     return;
   }
 
-  // 本日（JST）の開始時刻を取得
-  const todayJST = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  todayJST.setUTCHours(0, 0, 0, 0);
-  const todayUTC = new Date(todayJST.getTime() - 9 * 60 * 60 * 1000);
-
-  // 未処理かつ本日以降のミーティングだけを対象にする
-  const newMeetings = meetings.filter((m) => {
-    if (processedIds.has(m.id)) return false;
-    const meetingDate = new Date(m.happenedAt);
-    return meetingDate >= todayUTC;
-  });
-  console.log(`[Poller] 本日以降の新規ミーティング: ${newMeetings.length}件`);
+  // 未処理のミーティングだけを対象にする
+  const newMeetings = meetings.filter((m) => !processedIds.has(m.id));
+  console.log(`[Poller] 新規ミーティング: ${newMeetings.length}件`);
 
   for (const meeting of newMeetings) {
     console.log(`[Poller] 処理中: ${meeting.name} (${meeting.id})`);
@@ -143,14 +119,13 @@ async function pollAndProcess() {
     };
 
     try {
+      // 先に処理済みとして登録（エラー時も重複投稿を防ぐ）
+      processedIds.add(meeting.id);
+
       // Claude APIで議事録を生成してSlackに投稿
       const generatedContent = await generateMinutes(meetingData);
       await postToSlack(meetingData, generatedContent);
       console.log(`[Poller] 投稿完了: ${meeting.name}`);
-
-      // 処理済みとして記録
-      processedIds.add(meeting.id);
-      saveProcessedIds(processedIds);
     } catch (e) {
       console.error(`[Poller] 処理エラー (${meeting.name}):`, e.message);
     }
@@ -161,10 +136,13 @@ async function pollAndProcess() {
 
 /**
  * ポーリングスケジューラーを起動する
- * 日本時間 9:00, 11:00, 13:00, 15:00, 17:00, 19:00 に実行（UTC: 0,2,4,6,8,10時）
+ * 日本時間 10:00〜19:00 / 15分おきに実行
  */
-function startPoller() {
+async function startPoller() {
   console.log("[Poller] スケジューラー起動（JST 10:00〜19:00 / 15分おき）");
+
+  // 起動時に既存ミーティングを処理済みとして登録
+  await initializeProcessedIds();
 
   // UTC 1〜10時 = JST 10〜19時（毎時0,15,30,45分に実行）
   cron.schedule("0,15,30,45 1-10 * * *", async () => {
