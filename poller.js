@@ -100,9 +100,18 @@ async function pollAndProcess() {
     return;
   }
 
-  // 未処理のミーティングだけを対象にする
-  const newMeetings = meetings.filter((m) => !processedIds.has(m.id));
-  console.log(`[Poller] 新規ミーティング: ${newMeetings.length}件`);
+  // 本日（JST）の開始時刻を取得
+  const todayJST = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  todayJST.setUTCHours(0, 0, 0, 0);
+  const todayUTC = new Date(todayJST.getTime() - 9 * 60 * 60 * 1000);
+
+  // 未処理かつ本日以降のミーティングだけを対象にする
+  const newMeetings = meetings.filter((m) => {
+    if (processedIds.has(m.id)) return false;
+    const meetingDate = new Date(m.happenedAt);
+    return meetingDate >= todayUTC;
+  });
+  console.log(`[Poller] 本日以降の新規ミーティング: ${newMeetings.length}件`);
 
   for (const meeting of newMeetings) {
     console.log(`[Poller] 処理中: ${meeting.name} (${meeting.id})`);
