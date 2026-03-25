@@ -155,10 +155,10 @@ async function pollAndProcess() {
  * 日本時間 9:00, 11:00, 13:00, 15:00, 17:00, 19:00 に実行（UTC: 0,2,4,6,8,10時）
  */
 function startPoller() {
-  console.log("[Poller] スケジューラー起動（JST 10:00〜19:00 / 30分おき）");
+  console.log("[Poller] スケジューラー起動（JST 10:00〜19:00 / 15分おき）");
 
-  // UTC 1〜10時 = JST 10〜19時（毎時0分・30分に実行）
-  cron.schedule("0,30 1-10 * * *", async () => {
+  // UTC 1〜10時 = JST 10〜19時（毎時0,15,30,45分に実行）
+  cron.schedule("0,15,30,45 1-10 * * *", async () => {
     await pollAndProcess();
   });
 }
