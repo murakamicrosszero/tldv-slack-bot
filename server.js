@@ -241,4 +241,8 @@ app.listen(PORT, () => {
   console.log(`[Server] TLDV Slack Bot が起動しました (ポート: ${PORT})`);
   console.log(`[Server] Webhookエンドポイント: POST /webhook`);
   console.log(`[Server] ヘルスチェック: GET /health`);
+
+  // 定期ポーリングを起動（JST 9:00〜20:00 / 2時間おき）
+  const { startPoller } = require("./poller");
+  startPoller();
 });
