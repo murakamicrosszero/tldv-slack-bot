@@ -80,10 +80,10 @@ async function fetchTranscript(meetingId) {
  * 新しいミーティングを処理して議事録をSlackに投稿する
  */
 async function pollAndProcess() {
-  // JSTで現在時刻を確認（9:00〜20:00のみ実行）
+  // JSTで現在時刻を確認（10:00〜19:00のみ実行）
   const nowJST = new Date(Date.now() + 9 * 60 * 60 * 1000);
   const hour = nowJST.getUTCHours();
-  if (hour < 9 || hour >= 20) {
+  if (hour < 10 || hour >= 19) {
     console.log(`[Poller] 対象時間外のためスキップ (JST ${hour}時)`);
     return;
   }
@@ -155,10 +155,10 @@ async function pollAndProcess() {
  * 日本時間 9:00, 11:00, 13:00, 15:00, 17:00, 19:00 に実行（UTC: 0,2,4,6,8,10時）
  */
 function startPoller() {
-  console.log("[Poller] スケジューラー起動（JST 9:00〜20:00 / 2時間おき）");
+  console.log("[Poller] スケジューラー起動（JST 10:00〜19:00 / 1時間おき）");
 
-  // UTC 0,2,4,6,8,10時 = JST 9,11,13,15,17,19時
-  cron.schedule("0 0,2,4,6,8,10 * * *", async () => {
+  // UTC 1〜10時 = JST 10〜19時（毎時0分に実行）
+  cron.schedule("0 1-10 * * *", async () => {
     await pollAndProcess();
   });
 }
