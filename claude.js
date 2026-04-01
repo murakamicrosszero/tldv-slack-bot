@@ -24,6 +24,11 @@ async function generateMinutes(meetingData) {
     ? participants.join(", ")
     : participants || "不明";
 
+  // トランスクリプトが長すぎる場合は先頭20000文字に切り詰める
+  const truncatedTranscript = transcript && transcript.length > 20000
+    ? transcript.substring(0, 20000) + "\n\n（※トランスクリプトが長いため一部省略）"
+    : transcript;
+
   // ユーザープロンプトの構築
   const userPrompt = `## ミーティング情報
 - タイトル：${title}
@@ -34,7 +39,7 @@ async function generateMinutes(meetingData) {
 ${summary || "（サマリーなし）"}
 
 ## フルトランスクリプト
-${transcript || "（トランスクリプトなし）"}
+${truncatedTranscript || "（トランスクリプトなし）"}
 
 ---
 
@@ -71,7 +76,7 @@ ${transcript || "（トランスクリプトなし）"}
   // Claude APIへのリクエスト
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-5",
-    max_tokens: 4096,
+    max_tokens: 8192,
     system: `あなたはプロのミーティングファシリテーターです。
 提供されたミーティングのトランスクリプトと情報をもとに、
 日本語で議事録とクライアント向けメールサマリーを作成してください。
